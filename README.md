@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="PingScanner" width="200">
+</p>
+
 # PingScanner
 
 設定した IP ネットワーク（CIDR 形式）に対して定期的に ICMP Echo（PING）を送信し、生存確認・最終応答日時・連続失敗回数・履歴・備考（Remark）を管理する Windows 向けツールです。
