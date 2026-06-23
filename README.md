@@ -1,1 +1,2 @@
-"# PingScanner" 
+# PingScanner
+自動でいい具合にPINGをうって結果をまとめるツール

@@ -1,0 +1,37 @@
+# Local Python virtual environment
+pyenv/
+.venv/
+venv/
+env/
+
+# PyInstaller build output
+build/
+dist/
+*.exe
+
+# Local config (copy from config.sample.ini)
+config.ini
+pingscanner.lock
+pingscanner.stop
+
+# Runtime data — local only, not shared via git
+logs/**
+exports/**
+
+# SQLite database — local only, not shared via git
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store

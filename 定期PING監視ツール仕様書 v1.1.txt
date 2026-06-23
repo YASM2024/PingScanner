@@ -1,0 +1,351 @@
+定期PING監視ツール仕様書 v1.1
+
+（v1.0 からの主な変更点）
+・対象ネットワーク・巡回日数・タイムアウト等を config.ini で設定可能に
+・ip_status 拡張（ip_index, remark, consecutive_fail, first_found 等）
+・巡回末尾のラップアラウンド対応
+・CSV エクスポートツール（export_csv.exe）追加
+・Remark 登録 GUI（remark_ui.exe）追加
+・3 実行ファイル構成（main / export_csv / remark_ui）
+・config.sample.ini をテンプレートとして配布、config.ini はローカル専用
+
+
+1. 目的
+
+設定した IP ネットワーク（CIDR 形式）に対して定期的に ICMP Echo（PING）を送信し、
+
+生存確認
+最終確認日時管理
+最終応答日時管理
+連続失敗回数管理
+初回応答日時管理
+履歴保存
+Remark（備考）管理
+
+を行う。
+
+Windows タスクスケジューラから main.exe を毎日実行することを前提とする。
+
+
+2. システム構成
+
+2.1 実行ファイル（PyInstaller ビルド後）
+
+dist\
+├─ main.exe          … PING 巡回スキャン（タスクスケジューラ実行対象）
+├─ export_csv.exe    … ip_status を CSV 出力
+└─ remark_ui.exe     … Remark 登録 GUI
+
+2.2 配置ファイル・データ（EXE と同階層、または config.ini で指定）
+
+├─ config.ini        … ローカル設定（Git 管理外）
+├─ config.sample.ini … 設定テンプレート（Git 管理対象）
+├─ pingscanner.db    … SQLite DB（Git 管理外）
+├─ logs\             … 日次ログ（Git 管理外）
+└─ exports\          … CSV 出力先（Git 管理外）
+
+EXE 化後も SQLite DB・ログ・CSV は EXE 外部に配置する。
+config.ini の DB_FILE / LOG_DIR / CSV_DIR で相対パスまたは絶対パスを指定できる。
+
+
+3. ソース構成（開発時）
+
+pingscanner\
+├─ build.bat
+├─ config.sample.ini
+├─ pingscanner.spec
+├─ src\
+│   ├─ main.py         … スキャン本体
+│   ├─ export_csv.py   … CSV エクスポート
+│   ├─ remark_ui.py    … Remark GUI
+│   ├─ config.py       … config.ini 読み込み
+│   ├─ database.py     … DB アクセス
+│   ├─ scanner.py      … PING 実行
+│   ├─ models.py       … テーブル定義
+│   └─ logger.py       … ログ出力
+└─ pyenv\              … ローカル仮想環境（Git 管理外）
+
+
+4. 対象ネットワーク
+
+config.ini の NETWORK で CIDR 形式指定。
+
+例
+NETWORK=10.50.0.0/16   → 65536 IP
+NETWORK=192.168.1.0/26  → 64 IP
+
+初回起動時に ip_status へ全 IP を ip_index 順で一括登録する。
+予約アドレスも含めて巡回する。
+（IP 除外設定は未実装）
+
+
+5. 巡回方式
+
+5.1 基本方針
+
+毎日起動時に未巡回領域を続きからスキャンする。
+
+5.2 状態管理
+
+DB 内 scan_state テーブルで current_index（INTEGER）を保持。
+
+5.3 1 日あたりの巡回数
+
+    scan_count = ceil(総 IP 数 ÷ DAYS_PER_CYCLE)
+
+例：65536 IP、100 日で 1 周
+    scan_count = ceil(65536 / 100) = 656 IP/日
+
+5.4 巡回完了・ラップアラウンド
+
+next_index = current_index + scan_count
+
+next_index >= 総 IP 数 の場合、next_index = 0 に戻る。
+
+1 日の処理でネットワーク末尾を跨ぐ場合、末尾から先頭へ連続して取得する
+（get_ip_range がラップアラウンド対応）。
+
+
+6. PING 仕様
+
+6.1 実行方式
+
+Python subprocess により Windows 標準 ping を利用。
+
+    ping -n 1 -w {PING_TIMEOUT} {IP}
+
+PING_TIMEOUT は config.ini で指定（ミリ秒）。
+
+6.2 判定
+
+stdout に "ttl=" が含まれる  → SUCCESS
+それ以外（タイムアウト・エラー含む） → FAIL
+
+6.3 並列実行
+
+PARALLEL で指定（デフォルト 4）。
+ThreadPoolExecutor 使用。
+
+6.4 所要時間見積（参考）
+
+656 IP × 1 秒 = 656 秒（約 11 分）を 4 並列で約 164 秒（約 3 分）。
+
+
+7. IP 管理テーブル（ip_status）
+
+1 IP につき 1 レコード。
+
+CREATE TABLE IF NOT EXISTS ip_status (
+    ip_index INTEGER PRIMARY KEY,
+    ip TEXT UNIQUE,
+    hostname TEXT,
+    remark TEXT,
+    first_found DATETIME,
+    last_check DATETIME,
+    last_reply DATETIME,
+    last_result INTEGER,
+    consecutive_fail INTEGER DEFAULT 0
+);
+
+項目	内容
+ip_index	ネットワーク内の巡回順序（0 始まり）
+ip	IP アドレス
+hostname	ホスト名（カラムのみ定義、未使用）
+remark	備考（remark_ui.exe で登録）
+first_found	初回 PING 成功日時（成功時に COALESCE で設定）
+last_check	最後に PING した日時
+last_reply	最後に応答があった日時
+last_result	1=成功 0=失敗
+consecutive_fail	連続失敗回数（成功時 0 にリセット）
+
+更新ルール（update_ping_result）
+
+・ping_log へ履歴 INSERT
+・SUCCESS：last_check / last_reply 更新、last_result=1、consecutive_fail=0、
+            first_found が NULL なら初回成功日時を設定
+・FAIL   ：last_check 更新、last_result=0、consecutive_fail を +1
+
+
+8. 履歴テーブル（ping_log）
+
+CREATE TABLE IF NOT EXISTS ping_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_time DATETIME,
+    ip TEXT,
+    result INTEGER
+);
+
+記録例
+
+日時	IP	結果
+2026-06-04 01:00:01	10.50.1.1	1
+2026-06-04 01:00:02	10.50.1.2	0
+
+削除しない。永久保存。
+
+
+9. 巡回状態テーブル（scan_state）
+
+CREATE TABLE IF NOT EXISTS scan_state (
+    current_index INTEGER
+);
+
+初回 DB 作成時に current_index = 0 を INSERT。
+保持例：26240 → 次回起動時は ip_index 26240 付近から再開。
+
+
+10. 初回起動
+
+DB が存在しない、または ip_status が空の場合：
+
+・テーブル自動生成（ip_status / ping_log / scan_state）
+・NETWORK から全 IP を ip_index 付きで ip_status に INSERT
+・scan_state に current_index = 0 を INSERT
+
+DB ファイル・ログ・エクスポート先ディレクトリは存在しなければ自動生成。
+
+
+11. ログ
+
+保存先
+
+    {LOG_DIR}\YYYYMMDD.log
+
+LOG_DIR は config.ini で指定（相対パスは EXE 配置ディレクトリ基準）。
+
+記録例
+
+2026-06-04 01:00:00 INFO START
+2026-06-04 01:00:00 INFO DB=C:\...\pingscanner.db
+2026-06-04 01:00:00 INFO NETWORK=10.50.0.0/16
+2026-06-04 01:00:00 INFO TOTAL_IP=65536
+2026-06-04 01:00:00 INFO SCAN_COUNT=656
+2026-06-04 01:00:00 INFO CURRENT_INDEX=0
+2026-06-04 01:00:01 INFO 10.50.0.1 SUCCESS
+2026-06-04 01:00:02 INFO 10.50.0.2 FAIL
+2026-06-04 01:03:10 INFO SUCCESS=120
+2026-06-04 01:03:10 INFO FAIL=536
+2026-06-04 01:03:10 INFO NEXT_INDEX=656
+2026-06-04 01:03:10 INFO END
+
+ファイル出力に加え、標準出力にも同一内容を出力。
+
+
+12. config.ini
+
+テンプレートは config.sample.ini。初回セットアップ時にコピーして config.ini を作成する。
+config.ini は環境依存のため Git 管理しない。
+
+[SCAN]
+NETWORK=10.50.0.0/16
+DAYS_PER_CYCLE=100
+PING_TIMEOUT=5000
+PARALLEL=4
+LOG_DIR=logs
+DB_FILE=pingscanner.db
+
+[EXPORT]
+CSV_DIR=exports
+
+項目	内容
+NETWORK	スキャン対象 CIDR
+DAYS_PER_CYCLE	1 周に要する日数
+PING_TIMEOUT	ping -w のタイムアウト（ms）
+PARALLEL	並列 PING 数
+LOG_DIR	ログ出力ディレクトリ
+DB_FILE	SQLite DB ファイルパス
+CSV_DIR	CSV エクスポート先ディレクトリ
+
+
+13. CSV エクスポート（export_csv.exe）
+
+手動実行。ip_status 全件を CSV 出力。
+
+出力先
+
+    {CSV_DIR}\{YYYYMMDD_HHMMSS}_ip_status.csv
+
+文字コード UTF-8（BOM 付き）。
+
+出力列
+
+IP, Hostname, Remark, FirstFound, LastCheck, LastReply, LastResult, ConsecutiveFail
+
+ip_index 順でソート。
+
+
+14. Remark 登録 GUI（remark_ui.exe）
+
+手動実行。Tkinter ベースの GUI。
+
+機能
+
+・個別登録：1 IP を指定して remark を設定
+・範囲一括登録：開始 IP〜終了 IP の ip_index 範囲に同一 remark を設定
+・PING 未応答（last_reply が NULL）の IP に登録する場合、警告ダイアログを表示
+
+remark のみ更新。hostname は未対応。
+
+
+15. タスクスケジューラ
+
+毎日 01:00 実行（推奨）
+
+対象
+main.exe
+
+export_csv.exe / remark_ui.exe は必要に応じて手動実行。
+
+
+16. ビルド
+
+build.bat を実行。
+
+    pyenv\Scripts\pyinstaller.exe --clean --noconfirm pingscanner.spec
+
+成果物
+dist\main.exe
+dist\export_csv.exe
+dist\remark_ui.exe
+
+
+17. Git 管理方針
+
+Git 管理対象
+・ソースコード（src\）
+・config.sample.ini
+・build.bat / pingscanner.spec
+・本仕様書
+
+Git 管理外（.gitignore）
+・pyenv\（ローカル仮想環境）
+・config.ini（ローカル設定）
+・dist\ / build\ / *.exe
+・pingscanner.db および SQLite 関連ファイル
+・logs\ 配下
+・exports\ 配下
+
+
+18. 実装済み機能一覧
+
+SQLite 65536 IP 管理（NETWORK 設定に応じた件数）
+DAYS_PER_CYCLE に基づく 1 日巡回数の自動計算
+並列 PING（ThreadPoolExecutor）
+最終確認日時 / 最終応答日時 / 最新結果
+連続失敗回数 / 初回応答日時
+履歴保存（ping_log）
+巡回状態管理（scan_state / ラップアラウンド）
+ログ出力（日次ファイル + 標準出力）
+config.ini による各種設定
+CSV エクスポート
+Remark 登録 GUI
+3 EXE 構成
+
+
+19. 未実装・将来拡張
+
+hostname の自動取得・更新
+IP 除外設定
+ping_log のローテーション / アーカイブ
+Web UI / ダッシュボード
+タスクスケジューラ登録の自動化
