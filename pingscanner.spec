@@ -5,6 +5,7 @@ block_cipher = None
 src_path = "src"
 
 common_hiddenimports = [
+    "banner",
     "config",
     "database",
     "logger",
@@ -23,7 +24,7 @@ def make_exe(
     name,
     console=True,
     hiddenimports=None,
-    icon="icon.ico",
+    icon="src/icon.ico",
 ):
 
     analysis = Analysis(
@@ -83,7 +84,7 @@ export_csv_exe = make_exe(
     "src/export_csv.py",
     "export_csv",
     console=True,
-    hiddenimports=["config", "network_utils", "db_resolver"],
+    hiddenimports=["banner", "config", "network_utils", "db_resolver"],
 )
 
 remark_ui_exe = make_exe(

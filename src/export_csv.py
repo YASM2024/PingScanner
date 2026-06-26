@@ -13,6 +13,8 @@ from datetime import datetime
 
 from config import Config
 
+from banner import print_banner, pause_console
+
 
 def main():
 
@@ -116,4 +118,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    print_banner()
+    try:
+        main()
+    finally:
+        pause_console()

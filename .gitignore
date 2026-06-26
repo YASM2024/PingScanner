@@ -1,4 +1,5 @@
 # Local Python virtual environment
+.pyenv/
 pyenv/
 .venv/
 venv/

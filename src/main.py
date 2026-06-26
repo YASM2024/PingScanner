@@ -26,6 +26,8 @@ from db_resolver import prepare_database
 
 from logger import setup_logger
 
+from banner import print_banner, pause_console
+
 from run_lock import RunLock, RunLockError
 
 from scan_control import ScanAborted, StopController
@@ -402,5 +404,13 @@ def _run_scan(cfg, logger):
 
 if __name__ == "__main__":
 
-    main()
+    print_banner()
+
+    try:
+
+        main()
+
+    finally:
+
+        pause_console()
 
